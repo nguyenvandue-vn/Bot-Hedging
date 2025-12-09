@@ -44,7 +44,7 @@ SYSTEM_CONFIG = {
     'min_profit_pct': 0.003,    # 0.3%
     'fixed_loss_usdt': 5,     # số USDT chấp nhận mất cố định cho mỗi lệnh
     'max_loss_usdt': 10.0,     # Mức lỗ tối đa chấp nhận cho mỗi lệnh (USDT)
-    'leverage': 50,
+    'leverage': 45,
     # --- CẤU HÌNH TIME STOP (MỚI) ---
     'time_stop_factor': 2.0,    # Thoát lệnh nếu giữ quá 2.0 lần Half-Life
 
@@ -151,7 +151,7 @@ class TradingBotWorker(threading.Thread):
 
         try:
             self.exchange_exec.load_markets()
-            #self.set_leverage(SYSTEM_CONFIG['leverage'])
+            self.setup_margin_mode()
         except Exception as e:
             print(f"Lỗi tải market BingX: {e}")
         
@@ -184,16 +184,29 @@ class TradingBotWorker(threading.Thread):
         self.dynamic_entry_z = SYSTEM_CONFIG['entry_z'] # Mặc định
         # Nạp dữ liệu ban đầu
         self.init_warmup(initial_history)
-
-    def set_leverage(self, leverage):
+    
+    def setup_margin_mode(self):
         try:
-            # Cài đòn bẩy cho cả 2 cặp
-            symbol_y_f = self.get_bingx_futures_symbol(self.symbol_y)
-            symbol_x_f = self.get_bingx_futures_symbol(self.symbol_x)
-            self.exchange_exec.set_leverage(leverage, symbol_y_f)
-            self.exchange_exec.set_leverage(leverage, symbol_x_f)
-            print(f"✅ Đã cài đòn bẩy {leverage}x cho {self.symbol_y} & {self.symbol_x}")
-        except: pass # Có thể lỗi nếu đã cài rồi, bỏ qua
+            # 1. Lấy symbol chuẩn futures
+            sy = self.get_bingx_futures_symbol(self.symbol_y)
+            sx = self.get_bingx_futures_symbol(self.symbol_x)
+            
+            # 2. Set Margin Mode là CROSS (Dùng chung vốn)
+            # BingX API đôi khi cần set cho cả 2 chiều buy/sell hoặc chỉ cần set 1 lần
+            try:
+                self.exchange_exec.set_margin_mode('CROSS', sy)
+                self.exchange_exec.set_margin_mode('CROSS', sx)
+            except: pass # Có thể đã là Cross rồi
+
+            # 3. Set Leverage (Đòn bẩy)
+            self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sy, {'side': 'LONG'})
+            self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sy, {'side': 'SHORT'})
+            self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sx, {'side': 'LONG'})
+            self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sx, {'side': 'SHORT'})
+            
+            self.log(f"✅ Setup CROSS Margin & Leverage {SYSTEM_CONFIG['leverage']}x OK", Fore.GREEN)
+        except Exception as e:
+            self.log(f"⚠️ Setup Margin Warning: {e}", Fore.YELLOW)
 
     def log(self, msg, color=Fore.WHITE):
         """Hàm log riêng để in tên Bot kèm theo"""
@@ -756,5 +769,3 @@ if __name__ == "__main__":
         system.run()
     except KeyboardInterrupt:
         print("\nĐã dừng hệ thống.")
-
-    # test Git
