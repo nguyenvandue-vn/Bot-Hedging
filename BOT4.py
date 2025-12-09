@@ -318,18 +318,18 @@ class TradingBotWorker(threading.Thread):
             return ticker_y['last'], ticker_x['last']
         except:
             return None, None
-
+        
     def get_bingx_futures_symbol(self, symbol):
-        # BingX Futures thường cần định dạng "ETH/USDT:USDT" để phân biệt với Spot
-        # Hàm này sẽ tìm trong market đã load để lấy ID chính xác
-        try:
-            market = self.exchange_exec.market(symbol)
-            return market['symbol'] # CCXT thường tự map sang 'ETH/USDT:USDT' nếu defaultType=swap
-        except:
-            # Nếu không tìm thấy, ép kiểu thủ công
-            if ':' not in symbol:
-                return f"{symbol}:USDT"
+        # Ép buộc định dạng Futures của CCXT cho BingX là "COIN/USDT:USDT"
+        if ':' in symbol:
             return symbol
+        
+        # Nếu đầu vào là "XLM/USDT", ta ép thành "XLM/USDT:USDT"
+        if '/' in symbol:
+            base, quote = symbol.split('/')
+            return f"{base}/{quote}:{quote}"
+            
+        return f"{symbol}:USDT"
 
     # HÀM CHUẨN HÓA SỐ LƯỢNG THEO QUY TẮC BINGX
     def normalize_amount(self, symbol, amount):
