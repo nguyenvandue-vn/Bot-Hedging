@@ -100,6 +100,15 @@ SYSTEM_CONFIG = {
         
         # Sửa cặp XRP/LTC
         ('LTC/USDT', 'XRP/USDT'),     # LTC (~110$) > XRP (~2.5$)  <-- Đảo lại
+        ('ORDI/USDT', 'STX/USDT'),
+        ('MKR/USDT', 'AAVE/USDT'),
+        ('COMP/USDT', 'SNX/USDT'),
+        ('ICP/USDT', 'FIL/USDT'),
+        ('AR/USDT', 'FIL/USDT'),
+        ('AXS/USDT', 'SAND/USDT'),
+        ('ILV/USDT', 'GALA/USDT'),
+        ('APT/USDT', 'SUI/USDT'),
+        ('INJ/USDT', 'TIA/USDT')
     ]
 }
 
