@@ -32,6 +32,7 @@ SYSTEM_CONFIG = {
     # --- CẤU HÌNH TRADING BOT ---
     'kf_delta': 1e-4,           # Kalman Filter Delta
     'kf_vt': 1e-3,              # Kalman Filter Vt
+    'min_beta': 0.5,            # Ngưỡng Beta tối thiểu
     'entry_z': 2.0,             # Ngưỡng vào lệnh Z-Score
     'exit_z': 0.0,              # Ngưỡng thoát lệnh
     'stop_loss_z': 4.5,
@@ -473,6 +474,11 @@ class TradingBotWorker(threading.Thread):
                     is_statistical_stop = False
                     current_z_val = z_score # Lưu giá trị z hiện tại
                     
+                    # --- KIỂM TRA Beta ---
+                    is_bad_beta = False
+                    if calc_beta < SYSTEM_CONFIG['min_beta']:
+                        is_bad_beta = True
+                    
                     if self.current_position_state == 'LONG':
                         # Đang Long (kỳ vọng Z tăng lên), nhưng Z lại giảm sâu quá ngưỡng Stoploss âm
                         # Ví dụ: Entry lúc Z=-2.0, Stoploss thiết lập là 4.5 thì ngưỡng cắt là -4.5
@@ -512,8 +518,8 @@ class TradingBotWorker(threading.Thread):
                     # --- Logic Trading Bình Thường ---
                     if signal == self.current_position_state and not is_bad_cointegration: 
                         if self.current_position_state == 'NEUTRAL':
-                            if z_score < -self.dynamic_entry_z and is_profitable: signal = 'LONG'
-                            elif z_score > self.dynamic_entry_z and is_profitable: signal = 'SHORT'
+                            if z_score < -self.dynamic_entry_z and is_profitable and not is_bad_beta: signal = 'LONG'
+                            elif z_score > self.dynamic_entry_z and is_profitable and not is_bad_beta: signal = 'SHORT'
                         
                         elif self.current_position_state == 'LONG':
                             if z_score >= SYSTEM_CONFIG['exit_z']: 
