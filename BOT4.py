@@ -615,7 +615,7 @@ class TradingBotWorker(threading.Thread):
                             if self.latest_p_value > SYSTEM_CONFIG['p_value_threshold']:
                                 p_val_display = f"{Fore.RED}{p_val_display}{Style.RESET_ALL}"
                             
-                            print(f"{Fore.CYAN}[BOT {self.pair_name}]{Style.RESET_ALL} St: {status_color}{self.current_position_state:<5}{Style.RESET_ALL} | Z:{z_score:+.2f} | P-Val:{p_val_display}")
+                            print(f"{Fore.CYAN}[BOT {self.pair_name}]{Style.RESET_ALL} St: {status_color}{self.current_position_state:<5}{Style.RESET_ALL} | Z:{z_score:+.2f} | P-Val:{p_val_display} | Beta:{calc_beta:.4f}")
 
                     # [NEW] CƠ CHẾ TỰ HỦY (SELF-DESTRUCT)
                     # Nếu đang NEUTRAL (không giữ lệnh) VÀ P-Value xấu -> Dừng Bot
