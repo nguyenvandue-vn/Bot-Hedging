@@ -68,7 +68,8 @@ SYSTEM_CONFIG = {
     'pairs_pool': [
         # Nhóm Coin giá trị tương đương (Mid-cap)
         ('DOT/USDT', 'ATOM/USDT'),    # DOT (~8$) > ATOM (~6$)
-        ('DOGE/USDT', 'SHIB/USDT'),   # DOGE (0.4$) > SHIB (0.00003$)
+        ('DOGE/USDT', '1000SHIB/USDT'),   # DOGE (0.4$) > SHIB (0.00003$)
+        ('1000FLOKI/USDT', '1000PEPE/USDT'),
         ('BCH/USDT', 'LTC/USDT'),     # BCH (~450$) > LTC (~110$)  <-- Đảo lại
         ('SOL/USDT', 'JUP/USDT'),     # SOL (~235$) > JUP (~1.3$)
         ('OP/USDT', 'ARB/USDT'),      # OP (~2.2$) > ARB (~0.9$)   <-- Đảo lại
@@ -326,10 +327,13 @@ class TradingBotWorker(threading.Thread):
             ticker_y = self.exchange_data.fetch_ticker(self.symbol_y)
             ticker_x = self.exchange_data.fetch_ticker(self.symbol_x)
             return ticker_y['last'], ticker_x['last']
-        except:
+        except Exception as e:
+            self.log(f"❌ Error fetching price: {e}", Fore.RED)
             return None, None
         
     def get_bingx_futures_symbol(self, symbol):
+        if '1000' in symbol and symbol != '1000PEPE/USDT':
+            symbol = symbol.replace('1000', '')
         # Ép buộc định dạng Futures của CCXT cho BingX là "COIN/USDT:USDT"
         if ':' in symbol:
             return symbol
@@ -344,6 +348,8 @@ class TradingBotWorker(threading.Thread):
     # HÀM CHUẨN HÓA SỐ LƯỢNG THEO QUY TẮC BINGX
     def normalize_amount(self, symbol, amount):
         try:
+            if '1000' in symbol and symbol != '1000PEPE/USDT':
+                amount = amount * 1000
             # Dùng symbol chuẩn Futures để normalize
             bingx_symbol = self.get_bingx_futures_symbol(symbol)
             return float(self.exchange_exec.amount_to_precision(bingx_symbol, amount))
@@ -632,6 +638,9 @@ class TradingBotWorker(threading.Thread):
                         self.log(f"🛑 STOPPING BOT: P-Value quá cao ({self.latest_p_value:.4f}). Hủy bot để giải phóng tài nguyên.", Fore.RED)
                         self.running = False # Break vòng lặp
                         break
+                
+                else:
+                    self.log("⚠️ Skipping cycle: Cannot fetch prices", Fore.YELLOW)
 
                 time.sleep(SYSTEM_CONFIG['bot_scan_interval'])
                 
@@ -645,7 +654,10 @@ class TradingBotWorker(threading.Thread):
 # ================= MODULE 3: INTELLIGENT SCANNER =================
 class IntelligentScanner:
     def __init__(self):
-        self.exchange = getattr(ccxt, SYSTEM_CONFIG['exchange'])({'enableRateLimit': True})
+        self.exchange = getattr(ccxt, SYSTEM_CONFIG['exchange'])({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'future'} 
+        })
         self.active_bots = {} 
 
     def fetch_data(self, symbol):
