@@ -69,7 +69,6 @@ SYSTEM_CONFIG = {
         # Nhóm Coin giá trị tương đương (Mid-cap)
         ('DOT/USDT', 'ATOM/USDT'),    # DOT (~8$) > ATOM (~6$)
         ('DOGE/USDT', '1000SHIB/USDT'),   # DOGE (0.4$) > SHIB (0.00003$)
-        ('1000FLOKI/USDT', '1000PEPE/USDT'),
         ('BCH/USDT', 'LTC/USDT'),     # BCH (~450$) > LTC (~110$)  <-- Đảo lại
         ('SOL/USDT', 'JUP/USDT'),     # SOL (~235$) > JUP (~1.3$)
         ('OP/USDT', 'ARB/USDT'),      # OP (~2.2$) > ARB (~0.9$)   <-- Đảo lại
