@@ -345,32 +345,6 @@ class TradingBotWorker(threading.Thread):
             self.log(f"❌ Error fetching price: {e}", Fore.RED)
             return None, None
     
-    def get_real_position(self, symbol, position_side):
-        """
-        Lấy số lượng coin thực tế đang nắm giữ từ sàn.
-        position_side: 'LONG' hoặc 'SHORT'
-        Trả về: số lượng (abs), nếu không có trả về 0
-        """
-        try:
-            # BingX trả về danh sách vị thế
-            positions = self.exchange_exec.fetch_positions([symbol])
-            bingx_symbol_futures = self.get_bingx_futures_symbol(symbol)
-            
-            for pos in positions:
-                # Kiểm tra đúng Symbol và đúng chiều Long/Short
-                # CCXT trả về side là 'long'/'short' (viết thường) hoặc check info raw
-                check_side = pos['side'] # 'long' or 'short'
-                
-                # So sánh symbol (cần cẩn thận vì format symbol có thể khác nhau chút ít)
-                # Cách tốt nhất là so sánh base/quote hoặc ID
-                if pos['symbol'] == bingx_symbol_futures or pos['symbol'] == symbol:
-                    if check_side.upper() == position_side.upper():
-                        return float(pos['contracts']) # Số lượng coin đang giữ
-            return 0.0
-        except Exception as e:
-            self.log(f"⚠️ Không lấy được vị thế thực tế {symbol}: {e}", Fore.YELLOW)
-            return 0.0
-
     def get_bingx_futures_symbol(self, symbol):
         if '1000' in symbol and symbol != '1000PEPE/USDT':
             symbol = symbol.replace('1000', '')
@@ -675,38 +649,18 @@ class TradingBotWorker(threading.Thread):
 
                             # --- LOGIC ĐÓNG LONG (Đang giữ Long Y, Short X) ---
                             if old_state == 'LONG':
-                                # 1. Đóng Long Y (Cần BÁN Y, posSide=LONG)
-                                real_qty_y = self.get_real_position(self.symbol_y, 'LONG')
-                                if real_qty_y > 0:
-                                    self.execute_bingx_close(self.symbol_y, 'sell', real_qty_y)
-                                else:
-                                    self.log(f"⚠️ Không tìm thấy vị thế LONG {self.symbol_y} để đóng", Fore.YELLOW)
-
-                                # 2. Đóng Short X (Cần MUA X, posSide=SHORT)
-                                real_qty_x = self.get_real_position(self.symbol_x, 'SHORT')
-                                if real_qty_x > 0:
-                                    self.execute_bingx_close(self.symbol_x, 'buy', real_qty_x)
-                                else:
-                                    self.log(f"⚠️ Không tìm thấy vị thế SHORT {self.symbol_x} để đóng", Fore.YELLOW)
+                                # 1. Đóng Short X (Cần MUA X, posSide=SHORT)
+                                self.execute_bingx_close(self.symbol_x, 'buy', self.qty_x)
+                                # 2. Đóng Long Y (Cần BÁN Y, posSide=LONG)                                
+                                self.execute_bingx_close(self.symbol_y, 'sell', self.qty_y)
 
                             # --- LOGIC ĐÓNG SHORT (Đang giữ Short Y, Long X) ---
                             elif old_state == 'SHORT':
                                 # 1. Đóng Short Y (Cần MUA Y, posSide=SHORT)
-                                real_qty_y = self.get_real_position(self.symbol_y, 'SHORT')
-                                if real_qty_y > 0:
-                                    self.execute_bingx_close(self.symbol_y, 'buy', real_qty_y)
-                                else:
-                                    self.log(f"⚠️ Không tìm thấy vị thế SHORT {self.symbol_y} để đóng", Fore.YELLOW)
-
+                                self.execute_bingx_close(self.symbol_y, 'buy', self.qty_y)
                                 # 2. Đóng Long X (Cần BÁN X, posSide=LONG)
-                                real_qty_x = self.get_real_position(self.symbol_x, 'LONG')
-                                if real_qty_x > 0:
-                                    self.execute_bingx_close(self.symbol_x, 'sell', real_qty_x)
-                                else:
-                                    self.log(f"⚠️ Không tìm thấy vị thế LONG {self.symbol_x} để đóng", Fore.YELLOW)
-                        
-                           
-                            
+                                self.execute_bingx_close(self.symbol_x, 'sell', self.qty_x)                        
+                                                      
                             log_color = Fore.RED if "FORCE EXIT" in exit_reason else Fore.YELLOW
                             
                             self.log(f"🏁 EXIT ({old_state}) | {exit_reason} | Z: {z_score:.2f}", log_color)
