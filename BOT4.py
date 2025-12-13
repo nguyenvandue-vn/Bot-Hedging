@@ -27,7 +27,7 @@ SYSTEM_CONFIG = {
     
     # --- CẤU HÌNH SCANNER ---
     'scan_interval': 300,       # Quét lại sau mỗi 5 phút (300s)
-    'p_value_threshold': 0.049,   # Ngưỡng P-value
+    'p_value_threshold': 0.08,   # Ngưỡng P-value
     
     # --- CẤU HÌNH TRADING BOT ---
     'kf_delta': 1e-4,           # Kalman Filter Delta
@@ -43,8 +43,8 @@ SYSTEM_CONFIG = {
     'z_percentile': 90,         # Chọn ngưỡng mà 90% các đỉnh trong quá khứ đều chạm tới
 
     'min_profit_pct': 0.003,    # 0.3%
-    'fixed_loss_usdt': 5,     # số USDT chấp nhận mất cố định cho mỗi lệnh
-    'max_loss_usdt': 10.0,     # Mức lỗ tối đa chấp nhận cho mỗi lệnh (USDT)
+    'fixed_loss_usdt': 4,     # số USDT chấp nhận mất cố định cho mỗi lệnh
+    'max_loss_usdt': 8.0,     # Mức lỗ tối đa chấp nhận cho mỗi lệnh (USDT)
     'leverage': 45,
     # --- CẤU HÌNH TIME STOP (MỚI) ---
     'time_stop_factor': 2.0,    # Thoát lệnh nếu giữ quá 2.0 lần Half-Life
@@ -53,6 +53,9 @@ SYSTEM_CONFIG = {
     'bot_scan_interval': 60,    # 60 Giây (1 Phút) Bot check giá 1 lần
     'show_heartbeat': True,     # HIỆN LOG KHI BOT ĐANG CHỜ
     
+    'use_hurst_filter': True,   # Bật/Tắt bộ lọc này
+    'max_hurst': 0.5,          # Ngưỡng Hurst tối đa để chấp nhận (Dưới 0.5 là tốt)
+
     # --- CẤU HÌNH EMAIL ---
     'email_enabled': True,
     'email_sender': 'vuongtinhkhac@gmail.com',
@@ -75,9 +78,6 @@ SYSTEM_CONFIG = {
         ('LINK/USDT', 'UNI/USDT'),    # LINK (~22$) > UNI (~14$)
         ('XRP/USDT', 'ADA/USDT'),     # XRP (~2.5$) > ADA (~1.2$)  <-- Đảo lại
         ('AVAX/USDT', 'POL/USDT'),    # AVAX (~50$) > POL (~0.6$)  <-- Đảo lại
-        ('FTM/USDT', 'POL/USDT'),     # FTM (~1.0$) > POL (~0.6$)  <-- Đảo lại
-        ('XLM/USDT', 'ALGO/USDT'),    # XLM (~0.5$) > ALGO (~0.4$)
-        ('UNI/USDT', 'SUSHI/USDT'),   # UNI (~14$) > SUSHI (~1.5$)
 
         # Nhóm ETH làm trụ (ETH giá ~3900$, luôn nằm trước các Altcoin)
         ('ETH/USDT', 'BNB/USDT'),     # ETH > BNB (~700$)          <-- Đảo lại
@@ -164,6 +164,7 @@ class TradingBotWorker(threading.Thread):
         
         # Bộ nhớ thống kê
         self.spread_history = []
+        self.hurst_history_limit = 300
         self.cached_mean = 0
         self.cached_std = 0
         self.cached_beta = 0 
@@ -225,6 +226,24 @@ class TradingBotWorker(threading.Thread):
         if self.current_position_state != 'NEUTRAL' and p_val > SYSTEM_CONFIG['p_value_threshold']:
             self.log(f"⚠️ CẢNH BÁO: P-Value tăng cao ({p_val:.4f}). Chuẩn bị thoát lệnh!", Fore.RED)
 
+    def calculate_hurst(self, series):
+        try:
+            ts = np.array(series)
+            # Cần ít nhất 50 điểm dữ liệu để tính tương đối chính xác
+            if len(ts) < 50: return 0.49 # Giả định tốt để không chặn lệnh khi mới chạy
+            
+            lags = range(2, 20) 
+            tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
+            
+            # Tránh log(0) hoặc dữ liệu nhiễu
+            if np.any(np.array(tau) == 0): return 0.5
+
+            poly = np.polyfit(np.log(lags), np.log(tau), 1)
+            hurst = poly[0] * 2.0 
+            return hurst
+        except:
+            return 0.5
+
     def init_warmup(self, df_merged):
         try:
             self.kf = KalmanFilterReg(delta=SYSTEM_CONFIG['kf_delta'], vt=SYSTEM_CONFIG['kf_vt'])
@@ -249,10 +268,12 @@ class TradingBotWorker(threading.Thread):
                         z = (spread - mean) / std
                         z_history.append(abs(z)) # Lưu giá trị tuyệt đối |Z|
             
-            if len(self.spread_history) > self.z_window:
-                self.spread_history = self.spread_history[-self.z_window:]
+            # [MODIFIED] Giữ lại lịch sử dài hơn cho Hurst, nhưng tính toán Z chỉ dùng z_window
+            if len(self.spread_history) > self.hurst_history_limit:
+                self.spread_history = self.spread_history[-self.hurst_history_limit:]
             
-            series = pd.Series(self.spread_history)
+            series_for_z = self.spread_history[-self.z_window:]
+            series = pd.Series(series_for_z)
             self.cached_mean = series.mean()
             self.cached_std = series.std()
             self.cached_beta = last_beta
@@ -323,7 +344,33 @@ class TradingBotWorker(threading.Thread):
         except Exception as e:
             self.log(f"❌ Error fetching price: {e}", Fore.RED)
             return None, None
-        
+    
+    def get_real_position(self, symbol, position_side):
+        """
+        Lấy số lượng coin thực tế đang nắm giữ từ sàn.
+        position_side: 'LONG' hoặc 'SHORT'
+        Trả về: số lượng (abs), nếu không có trả về 0
+        """
+        try:
+            # BingX trả về danh sách vị thế
+            positions = self.exchange_exec.fetch_positions([symbol])
+            bingx_symbol_futures = self.get_bingx_futures_symbol(symbol)
+            
+            for pos in positions:
+                # Kiểm tra đúng Symbol và đúng chiều Long/Short
+                # CCXT trả về side là 'long'/'short' (viết thường) hoặc check info raw
+                check_side = pos['side'] # 'long' or 'short'
+                
+                # So sánh symbol (cần cẩn thận vì format symbol có thể khác nhau chút ít)
+                # Cách tốt nhất là so sánh base/quote hoặc ID
+                if pos['symbol'] == bingx_symbol_futures or pos['symbol'] == symbol:
+                    if check_side.upper() == position_side.upper():
+                        return float(pos['contracts']) # Số lượng coin đang giữ
+            return 0.0
+        except Exception as e:
+            self.log(f"⚠️ Không lấy được vị thế thực tế {symbol}: {e}", Fore.YELLOW)
+            return 0.0
+
     def get_bingx_futures_symbol(self, symbol):
         if '1000' in symbol and symbol != '1000PEPE/USDT':
             symbol = symbol.replace('1000', '')
@@ -376,7 +423,9 @@ class TradingBotWorker(threading.Thread):
         """
         try:
             target_symbol = self.get_bingx_futures_symbol(symbol)
-            params = {}
+            params = {
+                'reduceOnly': True  # <--- QUAN TRỌNG: Bắt buộc để đóng lệnh an toàn
+            }
             if side == 'buy':
                 params['positionSide'] = 'SHORT' 
             elif side == 'sell':
@@ -524,10 +573,18 @@ class TradingBotWorker(threading.Thread):
                             exit_reason = f"⏳ TIME STOP: {time_msg}"
                     
                     # --- Logic Trading Bình Thường ---
+                    current_hurst = 0.5 # Mặc định
+                    # --- KIỂM TRA HURST ---
+                    is_hurst = True
+                    if SYSTEM_CONFIG['use_hurst_filter']:
+                        current_hurst = self.calculate_hurst(self.spread_history)
+                        if current_hurst > SYSTEM_CONFIG['max_hurst']:
+                            is_hurst = False
+
                     if signal == self.current_position_state and not is_bad_cointegration: 
                         if self.current_position_state == 'NEUTRAL':
-                            if z_score < -self.dynamic_entry_z and is_profitable and not is_bad_beta: signal = 'LONG'
-                            elif z_score > self.dynamic_entry_z and is_profitable and not is_bad_beta: signal = 'SHORT'
+                            if z_score < -self.dynamic_entry_z and is_profitable and not is_bad_beta and is_hurst: signal = 'LONG'
+                            elif z_score > self.dynamic_entry_z and is_profitable and not is_bad_beta and is_hurst: signal = 'SHORT'
                         
                         elif self.current_position_state == 'LONG':
                             if z_score >= SYSTEM_CONFIG['exit_z']: 
@@ -550,6 +607,7 @@ class TradingBotWorker(threading.Thread):
                         <p><b>Action:</b> <span style="color:{'green' if signal=='LONG' else 'red'}; font-size:16px;"><b>{signal}</b></span></p>
                         <p><b>Z-Score:</b> {z_score:.4f}</p>
                         <p><b>Beta:</b> {calc_beta:.4f}</p>
+                        <p><b>Hurst:</b> {current_hurst:.4f}</p>
                         <p><b>Current P-Value:</b> {self.latest_p_value:.4f}</p>
                         <p><b>Spread PnL:</b> {spread_pct*100:.2f}%</p>
                         """
@@ -578,7 +636,7 @@ class TradingBotWorker(threading.Thread):
                             self.execute_bingx_order(self.symbol_x, 'sell', self.qty_x)
 
                             self.log(f"⚡ ENTRY LONG | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.GREEN)
-                            self.send_email(f"🟢 ENTRY LONG {self.pair_name}", html_body)
+                            self.send_email(f"🟢 HEDGING ENTRY LONG {self.pair_name}", html_body)
                             
                         elif signal == 'SHORT':
                             self.entry_time = datetime.now()
@@ -593,20 +651,49 @@ class TradingBotWorker(threading.Thread):
                             self.execute_bingx_order(self.symbol_x, 'buy', self.qty_x)
 
                             self.log(f"⚡ ENTRY SHORT | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.RED)
-                            self.send_email(f"🔴 ENTRY SHORT {self.pair_name}", html_body)
+                            self.send_email(f"🔴 HEDGING ENTRY SHORT {self.pair_name}", html_body)
 
                         elif signal == 'NEUTRAL':
                             old_state = self.current_position_state
 
-                            side_y = 'sell' if old_state == 'LONG' else 'buy'
-                            side_x = 'buy' if old_state == 'LONG' else 'sell'
-                            if self.qty_y > 0: self.execute_bingx_close(self.symbol_y, side_y, self.qty_y)
-                            if self.qty_x > 0: self.execute_bingx_close(self.symbol_x, side_x, self.qty_x)
+                            # --- LOGIC ĐÓNG LONG (Đang giữ Long Y, Short X) ---
+                            if old_state == 'LONG':
+                                # 1. Đóng Long Y (Cần BÁN Y, posSide=LONG)
+                                real_qty_y = self.get_real_position(self.symbol_y, 'LONG')
+                                if real_qty_y > 0:
+                                    self.execute_bingx_close(self.symbol_y, 'sell', real_qty_y)
+                                else:
+                                    self.log(f"⚠️ Không tìm thấy vị thế LONG {self.symbol_y} để đóng", Fore.YELLOW)
+
+                                # 2. Đóng Short X (Cần MUA X, posSide=SHORT)
+                                real_qty_x = self.get_real_position(self.symbol_x, 'SHORT')
+                                if real_qty_x > 0:
+                                    self.execute_bingx_close(self.symbol_x, 'buy', real_qty_x)
+                                else:
+                                    self.log(f"⚠️ Không tìm thấy vị thế SHORT {self.symbol_x} để đóng", Fore.YELLOW)
+
+                            # --- LOGIC ĐÓNG SHORT (Đang giữ Short Y, Long X) ---
+                            elif old_state == 'SHORT':
+                                # 1. Đóng Short Y (Cần MUA Y, posSide=SHORT)
+                                real_qty_y = self.get_real_position(self.symbol_y, 'SHORT')
+                                if real_qty_y > 0:
+                                    self.execute_bingx_close(self.symbol_y, 'buy', real_qty_y)
+                                else:
+                                    self.log(f"⚠️ Không tìm thấy vị thế SHORT {self.symbol_y} để đóng", Fore.YELLOW)
+
+                                # 2. Đóng Long X (Cần BÁN X, posSide=LONG)
+                                real_qty_x = self.get_real_position(self.symbol_x, 'LONG')
+                                if real_qty_x > 0:
+                                    self.execute_bingx_close(self.symbol_x, 'sell', real_qty_x)
+                                else:
+                                    self.log(f"⚠️ Không tìm thấy vị thế LONG {self.symbol_x} để đóng", Fore.YELLOW)
+                        
+                           
                             
                             log_color = Fore.RED if "FORCE EXIT" in exit_reason else Fore.YELLOW
                             
                             self.log(f"🏁 EXIT ({old_state}) | {exit_reason} | Z: {z_score:.2f}", log_color)
-                            self.send_email(f"🟡 EXIT {self.pair_name}", html_body)
+                            self.send_email(f"🟡 HEDGING EXIT {self.pair_name}", html_body)
                             self.entry_time = None
                             self.entry_price_y = 0; self.entry_price_x = 0
                             self.qty_y = 0; self.qty_x = 0
@@ -623,7 +710,7 @@ class TradingBotWorker(threading.Thread):
                             if self.latest_p_value > SYSTEM_CONFIG['p_value_threshold']:
                                 p_val_display = f"{Fore.RED}{p_val_display}{Style.RESET_ALL}"
                             
-                            print(f"{Fore.CYAN}[BOT {self.pair_name}]{Style.RESET_ALL} St: {status_color}{self.current_position_state:<5}{Style.RESET_ALL} | Z:{z_score:+.2f} | P-Val:{p_val_display} | Beta:{calc_beta:.4f}")
+                            print(f"{Fore.CYAN}[BOT {self.pair_name}]{Style.RESET_ALL} St: {status_color}{self.current_position_state:<5}{Style.RESET_ALL} | Z:{z_score:+.2f} | P-Val:{p_val_display} | Beta:{calc_beta:.4f} | Hurst:{current_hurst:.4f}")
 
                     # [NEW] CƠ CHẾ TỰ HỦY (SELF-DESTRUCT)
                     # Nếu đang NEUTRAL (không giữ lệnh) VÀ P-Value xấu -> Dừng Bot
