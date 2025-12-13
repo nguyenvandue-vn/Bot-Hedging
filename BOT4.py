@@ -34,7 +34,7 @@ SYSTEM_CONFIG = {
     'kf_vt': 1e-3,              # Kalman Filter Vt
     'min_beta': 0.5,            # Ngưỡng Beta tối thiểu
     'entry_z': 2.0,             # Ngưỡng vào lệnh Z-Score
-    'exit_z': 0.0,              # Ngưỡng thoát lệnh
+    'exit_z': 0.2,              # Ngưỡng thoát lệnh
     'stop_loss_z': 4.5,
 
     'auto_optimize_z': True,    # Bật tính năng tự tìm Z tối ưu
@@ -55,6 +55,7 @@ SYSTEM_CONFIG = {
     
     'use_hurst_filter': True,   # Bật/Tắt bộ lọc này
     'max_hurst': 0.5,          # Ngưỡng Hurst tối đa để chấp nhận (Dưới 0.5 là tốt)
+    'exit_limit_wait_seconds': 10,
 
     # --- CẤU HÌNH EMAIL ---
     'email_enabled': True,
@@ -390,13 +391,14 @@ class TradingBotWorker(threading.Thread):
             self.log(f"❌ BINGX ORDER ERROR ({symbol}): {e}", Fore.RED)
             return None 
     
-    def execute_bingx_close(self, symbol, side, amount):
+    def execute_bingx_close(self, symbol, side, amount, price):
         """
         side: 'buy' hoặc 'sell'
         amount: số lượng coin (Quantity)
         """
         try:
             target_symbol = self.get_bingx_futures_symbol(symbol)
+            price = self.exchange_exec.price_to_precision(target_symbol, price)
             params = {
                 'reduceOnly': True  # <--- QUAN TRỌNG: Bắt buộc để đóng lệnh an toàn
             }
@@ -404,7 +406,7 @@ class TradingBotWorker(threading.Thread):
                 params['positionSide'] = 'SHORT' 
             elif side == 'sell':
                 params['positionSide'] = 'LONG' 
-            order = self.exchange_exec.create_order(target_symbol, 'market', side, amount, params=params)
+            order = self.exchange_exec.create_order(target_symbol, 'limit', side, amount, price, params=params)
             self.log(f"✅ BINGX CLOSE: {side.upper()} {amount} {symbol}", Fore.GREEN)
             return order
         except Exception as e:
@@ -442,6 +444,37 @@ class TradingBotWorker(threading.Thread):
         email_thread = threading.Thread(target=self._send_email_thread, args=(subject, content))
         email_thread.daemon = True
         email_thread.start()
+
+    def execute_dual_market_order(self, side_y, qty_y, side_x, qty_x):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # Bắn 2 lệnh cùng lúc
+            f1 = executor.submit(self.execute_bingx_order, self.symbol_y, side_y, qty_y)
+            f2 = executor.submit(self.execute_bingx_order, self.symbol_x, side_x, qty_x)
+            
+            # Chờ kết quả
+            order_y = f1.result()
+            order_x = f2.result()
+            return order_y, order_x
+
+    def execute_dual_limit_close(self, side_y, qty_y, side_x, qty_x):
+        try:
+            ticker_y = self.exchange_exec.fetch_ticker(self.get_bingx_futures_symbol(self.symbol_y))
+            ticker_x = self.exchange_exec.fetch_ticker(self.get_bingx_futures_symbol(self.symbol_x))
+            price_y = ticker_y['last']
+            price_x = ticker_x['last']
+        except Exception as e:
+            self.log(f"❌ Lỗi lấy giá ticker, chuyển sang Market Close ngay lập tức: {e}", Fore.RED)
+            self.execute_dual_market_close(side_y, qty_y, side_x, qty_x)
+            return
+        orders = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # Lưu ý: Đặt giá Limit ở mức giá Last hiện tại (Tăng khả năng khớp Maker/Taker rẻ hơn trượt giá Market)
+            # Muốn chắc chắn Maker thì phải đặt lệch (nhưng rủi ro không khớp cao). 
+            # Đặt ở Last là cân bằng tốt nhất.
+            f1 = executor.submit(self.execute_bingx_close, self.symbol_y, side_y, qty_y, price_y)
+            f2 = executor.submit(self.execute_bingx_close, self.symbol_x, side_x, qty_x, price_x)
+            orders['y'] = f1.result()
+            orders['x'] = f2.result()
 
     def run(self):
         while self.running:
@@ -578,12 +611,12 @@ class TradingBotWorker(threading.Thread):
                             elif z_score > self.dynamic_entry_z and is_profitable and not is_bad_beta and is_hurst: signal = 'SHORT'
                         
                         elif self.current_position_state == 'LONG':
-                            if z_score >= SYSTEM_CONFIG['exit_z']: 
+                            if z_score >= -SYSTEM_CONFIG['exit_z']: 
                                 signal = 'NEUTRAL'
                                 exit_reason = "Take Profit (Z-Score Reversion)"
                                 
                         elif self.current_position_state == 'SHORT':
-                            if z_score <= -SYSTEM_CONFIG['exit_z']: 
+                            if z_score <= SYSTEM_CONFIG['exit_z']: 
                                 signal = 'NEUTRAL'
                                 exit_reason = "Take Profit (Z-Score Reversion)"
 
@@ -611,7 +644,8 @@ class TradingBotWorker(threading.Thread):
                             <p><b>PnL:</b> {net_pnl_usdt:.2f}USDT</p>
                             """ 
                         html_body += "<hr><p><i>Auto Trading Bot</i></p>"
-
+                        
+                        old_state = self.current_position_state
                         self.current_position_state = signal
 
                         if signal == 'LONG':
@@ -623,8 +657,9 @@ class TradingBotWorker(threading.Thread):
 
                             self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
                             self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
-                            self.execute_bingx_order(self.symbol_y, 'buy', self.qty_y)
-                            self.execute_bingx_order(self.symbol_x, 'sell', self.qty_x)
+                            # self.execute_bingx_order(self.symbol_y, 'buy', self.qty_y)
+                            # self.execute_bingx_order(self.symbol_x, 'sell', self.qty_x)
+                            self.execute_dual_market_order('buy', self.qty_y, 'sell', self.qty_x)
 
                             self.log(f"⚡ ENTRY LONG | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.GREEN)
                             self.send_email(f"🟢 HEDGING ENTRY LONG {self.pair_name}", html_body)
@@ -638,28 +673,22 @@ class TradingBotWorker(threading.Thread):
 
                             self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
                             self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
-                            self.execute_bingx_order(self.symbol_y, 'sell', self.qty_y)
-                            self.execute_bingx_order(self.symbol_x, 'buy', self.qty_x)
+                            # self.execute_bingx_order(self.symbol_y, 'sell', self.qty_y)
+                            # self.execute_bingx_order(self.symbol_x, 'buy', self.qty_x)
+                            
+                            self.execute_dual_market_order('sell', self.qty_y, 'buy', self.qty_x)
 
                             self.log(f"⚡ ENTRY SHORT | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.RED)
                             self.send_email(f"🔴 HEDGING ENTRY SHORT {self.pair_name}", html_body)
 
                         elif signal == 'NEUTRAL':
-                            old_state = self.current_position_state
-
                             # --- LOGIC ĐÓNG LONG (Đang giữ Long Y, Short X) ---
                             if old_state == 'LONG':
-                                # 1. Đóng Short X (Cần MUA X, posSide=SHORT)
-                                self.execute_bingx_close(self.symbol_x, 'buy', self.qty_x)
-                                # 2. Đóng Long Y (Cần BÁN Y, posSide=LONG)                                
-                                self.execute_bingx_close(self.symbol_y, 'sell', self.qty_y)
+                                self.execute_dual_limit_close('sell', self.qty_y, 'buy', self.qty_x)
 
                             # --- LOGIC ĐÓNG SHORT (Đang giữ Short Y, Long X) ---
                             elif old_state == 'SHORT':
-                                # 1. Đóng Short Y (Cần MUA Y, posSide=SHORT)
-                                self.execute_bingx_close(self.symbol_y, 'buy', self.qty_y)
-                                # 2. Đóng Long X (Cần BÁN X, posSide=LONG)
-                                self.execute_bingx_close(self.symbol_x, 'sell', self.qty_x)                        
+                                self.execute_dual_limit_close('buy', self.qty_y, 'sell', self.qty_x)                        
                                                       
                             log_color = Fore.RED if "FORCE EXIT" in exit_reason else Fore.YELLOW
                             
