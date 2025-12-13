@@ -437,20 +437,37 @@ class TradingBotWorker(threading.Thread):
             self.log(f"❌ BINGX CLOSE ERROR ({symbol}): {e}", Fore.RED)
             return None 
 
+    def _send_email_thread(self, subject, content):
+        """Hàm nội bộ chạy trong luồng riêng để retry gửi mail"""
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = SYSTEM_CONFIG['email_sender']
+                msg['To'] = SYSTEM_CONFIG['email_receiver']
+                msg['Subject'] = subject
+                msg.attach(MIMEText(content, 'html'))
+                
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=10) as server:
+                    server.login(SYSTEM_CONFIG['email_sender'], SYSTEM_CONFIG['email_password'])
+                    server.send_message(msg)
+                
+                # Nếu gửi thành công thì log và thoát vòng lặp
+                # print(f"📧 Email sent: {subject}") 
+                return 
+            except Exception as e:
+                print(f"⚠️ Mail Error (Attempt {i+1}/{max_retries}): {e}")
+                time.sleep(2) # Đợi 2 giây trước khi thử lại
+        
+        print(f"❌ GỬI MAIL THẤT BẠI SAU 3 LẦN: {subject}")
+
     def send_email(self, subject, content):
         if not SYSTEM_CONFIG['email_enabled']: return
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = SYSTEM_CONFIG['email_sender']
-            msg['To'] = SYSTEM_CONFIG['email_receiver']
-            msg['Subject'] = subject
-            msg.attach(MIMEText(content, 'html'))
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-                server.login(SYSTEM_CONFIG['email_sender'], SYSTEM_CONFIG['email_password'])
-                server.send_message(msg)
-        except Exception as e:
-            print(f"Mail Error: {e}")
+        # Tạo một luồng mới để gửi mail, không chặn Bot trading
+        email_thread = threading.Thread(target=self._send_email_thread, args=(subject, content))
+        email_thread.daemon = True
+        email_thread.start()
 
     def run(self):
         while self.running:
