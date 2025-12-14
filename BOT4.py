@@ -34,7 +34,7 @@ SYSTEM_CONFIG = {
     'kf_vt': 1e-3,              # Kalman Filter Vt
     'min_beta': 0.5,            # Ngưỡng Beta tối thiểu
     'entry_z': 2.0,             # Ngưỡng vào lệnh Z-Score
-    'exit_z': 0.2,              # Ngưỡng thoát lệnh
+    'exit_z': 0.1,              # Ngưỡng thoát lệnh
     'stop_loss_z': 4.5,
 
     'auto_optimize_z': True,    # Bật tính năng tự tìm Z tối ưu
@@ -391,14 +391,13 @@ class TradingBotWorker(threading.Thread):
             self.log(f"❌ BINGX ORDER ERROR ({symbol}): {e}", Fore.RED)
             return None 
     
-    def execute_bingx_close(self, symbol, side, amount, price):
+    def execute_bingx_close(self, symbol, side, amount):
         """
         side: 'buy' hoặc 'sell'
         amount: số lượng coin (Quantity)
         """
         try:
             target_symbol = self.get_bingx_futures_symbol(symbol)
-            price = self.exchange_exec.price_to_precision(target_symbol, price)
             params = {
                 'reduceOnly': True  # <--- QUAN TRỌNG: Bắt buộc để đóng lệnh an toàn
             }
@@ -406,7 +405,7 @@ class TradingBotWorker(threading.Thread):
                 params['positionSide'] = 'SHORT' 
             elif side == 'sell':
                 params['positionSide'] = 'LONG' 
-            order = self.exchange_exec.create_order(target_symbol, 'limit', side, amount, price, params=params)
+            order = self.exchange_exec.create_order(target_symbol, 'market', side, amount, params=params)
             self.log(f"✅ BINGX CLOSE: {side.upper()} {amount} {symbol}", Fore.GREEN)
             return order
         except Exception as e:
@@ -456,25 +455,13 @@ class TradingBotWorker(threading.Thread):
             order_x = f2.result()
             return order_y, order_x
 
-    def execute_dual_limit_close(self, side_y, qty_y, side_x, qty_x):
-        try:
-            ticker_y = self.exchange_exec.fetch_ticker(self.get_bingx_futures_symbol(self.symbol_y))
-            ticker_x = self.exchange_exec.fetch_ticker(self.get_bingx_futures_symbol(self.symbol_x))
-            price_y = ticker_y['last']
-            price_x = ticker_x['last']
-        except Exception as e:
-            self.log(f"❌ Lỗi lấy giá ticker, chuyển sang Market Close ngay lập tức: {e}", Fore.RED)
-            self.execute_dual_market_close(side_y, qty_y, side_x, qty_x)
-            return
-        orders = {}
+    def execute_dual_market_close(self, side_y, qty_y, side_x, qty_x):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            # Lưu ý: Đặt giá Limit ở mức giá Last hiện tại (Tăng khả năng khớp Maker/Taker rẻ hơn trượt giá Market)
-            # Muốn chắc chắn Maker thì phải đặt lệch (nhưng rủi ro không khớp cao). 
-            # Đặt ở Last là cân bằng tốt nhất.
-            f1 = executor.submit(self.execute_bingx_close, self.symbol_y, side_y, qty_y, price_y)
-            f2 = executor.submit(self.execute_bingx_close, self.symbol_x, side_x, qty_x, price_x)
-            orders['y'] = f1.result()
-            orders['x'] = f2.result()
+            f1 = executor.submit(self.execute_bingx_close, self.symbol_y, side_y, qty_y)
+            f2 = executor.submit(self.execute_bingx_close, self.symbol_x, side_x, qty_x)
+            order_y = f1.result()
+            order_x = f2.result()
+            return order_y, order_x
 
     def run(self):
         while self.running:
@@ -684,11 +671,11 @@ class TradingBotWorker(threading.Thread):
                         elif signal == 'NEUTRAL':
                             # --- LOGIC ĐÓNG LONG (Đang giữ Long Y, Short X) ---
                             if old_state == 'LONG':
-                                self.execute_dual_limit_close('sell', self.qty_y, 'buy', self.qty_x)
+                                self.execute_dual_market_close('sell', self.qty_y, 'buy', self.qty_x)
 
                             # --- LOGIC ĐÓNG SHORT (Đang giữ Short Y, Long X) ---
                             elif old_state == 'SHORT':
-                                self.execute_dual_limit_close('buy', self.qty_y, 'sell', self.qty_x)                        
+                                self.execute_dual_market_close('buy', self.qty_y, 'sell', self.qty_x)                        
                                                       
                             log_color = Fore.RED if "FORCE EXIT" in exit_reason else Fore.YELLOW
                             
