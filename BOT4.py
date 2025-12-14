@@ -30,7 +30,7 @@ SYSTEM_CONFIG = {
     'p_value_threshold': 0.08,   # Ngưỡng P-value
     
     # --- CẤU HÌNH TRADING BOT ---
-    'kf_delta': 1e-4,           # Kalman Filter Delta
+    'kf_delta': 1e-3,           # Kalman Filter Delta
     'kf_vt': 1e-3,              # Kalman Filter Vt
     'min_beta': 0.5,            # Ngưỡng Beta tối thiểu
     'entry_z': 2.0,             # Ngưỡng vào lệnh Z-Score
