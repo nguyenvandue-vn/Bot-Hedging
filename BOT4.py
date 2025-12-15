@@ -347,13 +347,31 @@ class TradingBotWorker(threading.Thread):
             self.log(f"Re-calibrate Failed: {e}", Fore.RED)
 
     def fetch_current_price(self):
-        try:
-            ticker_y = self.exchange_data.fetch_ticker(self.symbol_y)
-            ticker_x = self.exchange_data.fetch_ticker(self.symbol_x)
-            return ticker_y['last'], ticker_x['last']
-        except Exception as e:
-            self.log(f"❌ Error fetching price: {e}", Fore.RED)
-            return None, None
+        """
+        Hàm lấy giá có cơ chế Retry (Thử lại) thông minh
+        để chống lại việc rớt mạng hoặc timeout từ Binance.
+        """
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                # Dùng fetch_ticker là chuẩn, nhưng cần bọc trong try-catch chặt chẽ
+                ticker_y = self.exchange_data.fetch_ticker(self.symbol_y)
+                ticker_x = self.exchange_data.fetch_ticker(self.symbol_x)
+                
+                # Nếu lấy thành công, trả về ngay
+                return ticker_y['last'], ticker_x['last']
+            
+            except Exception as e:
+                # Nếu lỗi, log nhẹ và đợi một chút rồi thử lại
+                wait_time = 2 * (i + 1) # Lần 1 chờ 2s, Lần 2 chờ 4s...
+                if i < max_retries - 1:
+                    self.log(f"⚠️ Fetch Price Fail ({i+1}/{max_retries}): {e}. Retrying in {wait_time}s...", Fore.YELLOW)
+                    time.sleep(wait_time)
+                else:
+                    # Nếu đã thử hết 3 lần mà vẫn lỗi thì mới chịu thua
+                    self.log(f"❌ FETCH PRICE FINAL ERROR: {e}", Fore.RED)
+                    return None, None
+        return None, None
     
     def get_bingx_futures_symbol(self, symbol):
         if '1000' in symbol and symbol != '1000PEPE/USDT':
