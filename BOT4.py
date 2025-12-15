@@ -204,6 +204,15 @@ class TradingBotWorker(threading.Thread):
                 self.exchange_exec.set_margin_mode('CROSS', sx)
             except: pass # Có thể đã là Cross rồi
 
+            try:
+                # Set Dual Side Position (Hedge Mode) cho cả 2 cặp
+                self.exchange_exec.setPositionMode(True, symbol=sy) # True = Hedge Mode
+                self.exchange_exec.setPositionMode(True, symbol=sx)
+            except Exception as e:
+                # Lỗi này thường xảy ra nếu đang có lệnh treo, không switch mode được
+                # Nhưng nếu tài khoản đã ở Hedge Mode sẵn thì không sao.
+                self.log(f"⚠️ Set Hedge Mode Warning: {e}", Fore.YELLOW)
+
             # 3. Set Leverage (Đòn bẩy)
             self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sy, {'side': 'LONG'})
             self.exchange_exec.set_leverage(SYSTEM_CONFIG['leverage'], sy, {'side': 'SHORT'})
@@ -398,9 +407,7 @@ class TradingBotWorker(threading.Thread):
         """
         try:
             target_symbol = self.get_bingx_futures_symbol(symbol)
-            params = {
-                'reduceOnly': True  # <--- QUAN TRỌNG: Bắt buộc để đóng lệnh an toàn
-            }
+            params = {}
             if side == 'buy':
                 params['positionSide'] = 'SHORT' 
             elif side == 'sell':
