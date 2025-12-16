@@ -186,6 +186,8 @@ class TradingBotWorker(threading.Thread):
         self.entry_price_x = 0.0
         self.qty_y = 0.0
         self.qty_x = 0.0
+        self.qty_y_bingx = 0.0
+        self.qty_x_bingx = 0.0
 
         self.dynamic_entry_z = SYSTEM_CONFIG['entry_z'] # Mặc định
         # Nạp dữ liệu ban đầu
@@ -547,8 +549,8 @@ class TradingBotWorker(threading.Thread):
                         # Tổng bù trừ
                         net_pnl_usdt = pnl_y + pnl_x
 
-                    spread_pct = abs(live_spread) / py
-                    is_profitable = spread_pct >= SYSTEM_CONFIG['min_profit_pct']
+                    spread_pnl = (SYSTEM_CONFIG['stop_loss_z'] - abs(z_score)) * self.cached_std
+                    is_profitable = spread_pnl >= SYSTEM_CONFIG['min_profit_pct']
 
                     # 3. Logic Tín Hiệu & QUẢN TRỊ RỦI RO
                     signal = self.current_position_state
@@ -652,7 +654,7 @@ class TradingBotWorker(threading.Thread):
                         <p><b>Beta:</b> {calc_beta:.4f}</p>
                         <p><b>Hurst:</b> {current_hurst:.4f}</p>
                         <p><b>Current P-Value:</b> {self.latest_p_value:.4f}</p>
-                        <p><b>Spread PnL:</b> {spread_pct*100:.2f}%</p>
+                        <p><b>Spread PnL:</b> {spread_pnl*100:.2f}%</p>
                         """
                         if signal != 'NEUTRAL':
                             html_body += f"<p><b>Z-Threshold:</b> {self.dynamic_entry_z:.4f}</p>"
@@ -667,37 +669,37 @@ class TradingBotWorker(threading.Thread):
                         old_state = self.current_position_state
                         self.current_position_state = signal
 
-                        raw_qty_y = SYSTEM_CONFIG['fixed_loss_usdt'] / (spread_pct * py)
-                        raw_qty_x = raw_qty_y * py * calc_beta / px
-                        self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
-                        self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
+                        self.qty_y = SYSTEM_CONFIG['fixed_loss_usdt'] / (spread_pnl * py)
+                        self.qty_x = self.qty_y * py * calc_beta / px
+                        self.qty_y_bingx = self.normalize_amount(self.symbol_y, self.qty_y)
+                        self.qty_x_bingx = self.normalize_amount(self.symbol_x, self.qty_x)
 
                         if signal == 'LONG':
                             self.entry_time = datetime.now()
                             self.entry_price_y = py
                             self.entry_price_x = px
-                            self.execute_dual_market_order('buy', self.qty_y, 'sell', self.qty_x)
+                            self.execute_dual_market_order('buy', self.qty_y_bingx, 'sell', self.qty_x_bingx)
 
-                            self.log(f"⚡ ENTRY LONG | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.GREEN)
+                            self.log(f"⚡ ENTRY LONG | Z: {z_score:.2f} | PnL%: {spread_pnl*100:.2f}%", Fore.GREEN)
                             self.send_email(f"🟢 HEDGING ENTRY LONG {self.pair_name}", html_body)
                             
                         elif signal == 'SHORT':
                             self.entry_time = datetime.now()
                             self.entry_price_y = py
                             self.entry_price_x = px
-                            self.execute_dual_market_order('sell', self.qty_y, 'buy', self.qty_x)
+                            self.execute_dual_market_order('sell', self.qty_y_bingx, 'buy', self.qty_x_bingx)
 
-                            self.log(f"⚡ ENTRY SHORT | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.RED)
+                            self.log(f"⚡ ENTRY SHORT | Z: {z_score:.2f} | PnL%: {spread_pnl*100:.2f}%", Fore.RED)
                             self.send_email(f"🔴 HEDGING ENTRY SHORT {self.pair_name}", html_body)
 
                         elif signal == 'NEUTRAL':
                             # --- LOGIC ĐÓNG LONG (Đang giữ Long Y, Short X) ---
                             if old_state == 'LONG':
-                                self.execute_dual_market_close('sell', self.qty_y, 'buy', self.qty_x)
+                                self.execute_dual_market_close('sell', self.qty_y_bingx, 'buy', self.qty_x_bingx)
 
                             # --- LOGIC ĐÓNG SHORT (Đang giữ Short Y, Long X) ---
                             elif old_state == 'SHORT':
-                                self.execute_dual_market_close('buy', self.qty_y, 'sell', self.qty_x)                        
+                                self.execute_dual_market_close('buy', self.qty_y_bingx, 'sell', self.qty_x_bingx)                        
                                                       
                             log_color = Fore.RED if "FORCE EXIT" in exit_reason else Fore.YELLOW
                             
