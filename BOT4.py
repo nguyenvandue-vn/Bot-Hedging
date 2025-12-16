@@ -43,8 +43,8 @@ SYSTEM_CONFIG = {
     'z_percentile': 90,         # Chọn ngưỡng mà 90% các đỉnh trong quá khứ đều chạm tới
 
     'min_profit_pct': 0.003,    # 0.3%
-    'fixed_loss_usdt': 4,     # số USDT chấp nhận mất cố định cho mỗi lệnh
-    'max_loss_usdt': 8.0,     # Mức lỗ tối đa chấp nhận cho mỗi lệnh (USDT)
+    'fixed_loss_usdt': 2,     # số USDT chấp nhận mất cố định cho mỗi lệnh
+    'max_loss_usdt': 4.0,     # Mức lỗ tối đa chấp nhận cho mỗi lệnh (USDT)
     'leverage': 45,
     # --- CẤU HÌNH TIME STOP (MỚI) ---
     'time_stop_factor': 2.0,    # Thoát lệnh nếu giữ quá 2.0 lần Half-Life
@@ -264,7 +264,9 @@ class TradingBotWorker(threading.Thread):
             last_alpha = 0
             
             for idx, row in df_merged.iterrows():
-                beta, alpha, spread = self.kf.update(row['close_y'], row['close_x'])
+                log_y = np.log(row['close_y'])
+                log_x = np.log(row['close_x'])
+                beta, alpha, spread = self.kf.update(log_y, log_x)
                 self.spread_history.append(spread)
                 last_beta = beta
                 last_alpha = alpha
@@ -497,10 +499,12 @@ class TradingBotWorker(threading.Thread):
                 py, px = self.fetch_current_price()
                 
                 if py and px:
+                    log_py = np.log(py)
+                    log_px = np.log(px)
                     # 1. Update Thống kê (Mỗi khi đóng nến 15m)
                     if self.last_processed_candle_ts is not None and current_candle_ts != self.last_processed_candle_ts:
                         if self.current_position_state == 'NEUTRAL':
-                            beta_new, alpha_new, spread_new = self.kf.update(py, px)
+                            beta_new, alpha_new, spread_new = self.kf.update(log_py, log_px)
                             self.spread_history.append(spread_new)
                             if len(self.spread_history) > self.z_window: self.spread_history.pop(0)
                             
@@ -517,7 +521,7 @@ class TradingBotWorker(threading.Thread):
                     # 2. Tính toán Realtime
                     calc_beta = self.cached_beta
                     calc_alpha = self.cached_alpha
-                    live_spread = py - (calc_beta * px + calc_alpha)
+                    live_spread = log_py - (calc_beta * log_px + calc_alpha)
                     
                     if self.cached_std == 0: z_score = 0
                     else: z_score = (live_spread - self.cached_mean) / self.cached_std
@@ -660,17 +664,15 @@ class TradingBotWorker(threading.Thread):
                         old_state = self.current_position_state
                         self.current_position_state = signal
 
+                        raw_qty_y = SYSTEM_CONFIG['fixed_loss_usdt'] / (spread_pct * py)
+                        raw_qty_x = raw_qty_y * py * calc_beta / px
+                        self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
+                        self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
+
                         if signal == 'LONG':
                             self.entry_time = datetime.now()
                             self.entry_price_y = py
                             self.entry_price_x = px
-                            raw_qty_y = SYSTEM_CONFIG['fixed_loss_usdt'] / (spread_pct * py)
-                            raw_qty_x = raw_qty_y * calc_beta
-
-                            self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
-                            self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
-                            # self.execute_bingx_order(self.symbol_y, 'buy', self.qty_y)
-                            # self.execute_bingx_order(self.symbol_x, 'sell', self.qty_x)
                             self.execute_dual_market_order('buy', self.qty_y, 'sell', self.qty_x)
 
                             self.log(f"⚡ ENTRY LONG | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.GREEN)
@@ -680,14 +682,6 @@ class TradingBotWorker(threading.Thread):
                             self.entry_time = datetime.now()
                             self.entry_price_y = py
                             self.entry_price_x = px
-                            raw_qty_y = SYSTEM_CONFIG['fixed_loss_usdt'] / (spread_pct * py)
-                            raw_qty_x = raw_qty_y * calc_beta
-
-                            self.qty_y = self.normalize_amount(self.symbol_y, raw_qty_y)
-                            self.qty_x = self.normalize_amount(self.symbol_x, raw_qty_x)
-                            # self.execute_bingx_order(self.symbol_y, 'sell', self.qty_y)
-                            # self.execute_bingx_order(self.symbol_x, 'buy', self.qty_x)
-                            
                             self.execute_dual_market_order('sell', self.qty_y, 'buy', self.qty_x)
 
                             self.log(f"⚡ ENTRY SHORT | Z: {z_score:.2f} | PnL%: {spread_pct*100:.2f}%", Fore.RED)
