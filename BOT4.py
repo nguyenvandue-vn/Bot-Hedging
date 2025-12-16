@@ -32,7 +32,7 @@ SYSTEM_CONFIG = {
     # --- CẤU HÌNH TRADING BOT ---
     'kf_delta': 1e-3,           # Kalman Filter Delta
     'kf_vt': 1e-3,              # Kalman Filter Vt
-    'min_beta': 0.5,            # Ngưỡng Beta tối thiểu
+    'min_beta': 0.3,            # Ngưỡng Beta tối thiểu
     'entry_z': 2.0,             # Ngưỡng vào lệnh Z-Score
     'exit_z': 0.1,              # Ngưỡng thoát lệnh
     'stop_loss_z': 4.5,
@@ -40,7 +40,7 @@ SYSTEM_CONFIG = {
     'auto_optimize_z': True,    # Bật tính năng tự tìm Z tối ưu
     'min_entry_z': 1.5,         # Không bao giờ vào lệnh thấp hơn 1.5 (để đảm bảo lợi nhuận)
     'max_entry_z': 3.0,         # Không bao giờ đợi quá 3.0 (để tránh miss kèo)
-    'z_percentile': 90,         # Chọn ngưỡng mà 90% các đỉnh trong quá khứ đều chạm tới
+    'z_percentile': 85,         # Chọn ngưỡng mà 90% các đỉnh trong quá khứ đều chạm tới
 
     'min_profit_pct': 0.003,    # 0.3%
     'fixed_loss_usdt': 2,     # số USDT chấp nhận mất cố định cho mỗi lệnh
@@ -606,7 +606,10 @@ class TradingBotWorker(threading.Thread):
                         # 3. Ưu tiên nhì: P-Value (Mô hình hỏng)
                         elif is_bad_cointegration:
                             signal = 'NEUTRAL'
-                            exit_reason = f"⚠️ FORCE EXIT: P-Value xấu ({self.latest_p_value:.4f})"                           
+                            exit_reason = f"⚠️ FORCE EXIT: P-Value xấu ({self.latest_p_value:.4f})"    
+                        elif is_bad_beta:
+                            signal = 'NEUTRAL'
+                            exit_reason = f"⛔ BETA INVALID: Beta ({calc_beta:.4f}) < {SYSTEM_CONFIG['min_beta']}"                       
                         # 4. Ưu tiên ba: Time Stop (Hết giờ)
                         elif is_time_out:
                             signal = 'NEUTRAL'
